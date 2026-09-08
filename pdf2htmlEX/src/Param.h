@@ -58,6 +58,9 @@ struct Param
     int squeeze_wide_glyph;
     int override_fstype;
     int process_type3;
+    int expand_font_coverage;
+    std::string fallback_font_dir;
+    std::string default_fallback_font;
 
     // text
     double h_eps, v_eps;

@@ -12,6 +12,7 @@
 #include <sstream>
 #include <cctype>
 #include <unordered_set>
+#include <vector>
 
 #include <GlobalParams.h>
 #include <fofi/FoFiTrueType.h>
@@ -27,6 +28,7 @@
 #include "util/math.h"
 #include "util/misc.h"
 #include "util/ffw.h"
+#include "util/font_locator.h"
 #include "util/path.h"
 #include "util/unicode.h"
 #include "util/css_const.h"
@@ -835,6 +837,354 @@ void HTMLRenderer::embed_font(const string & filepath, GfxFont * font, FontInfo 
     ffw_close();
 }
 
+namespace {
+
+/*
+ * Coverage ranges for --expand-font-coverage: GBK CJK set + GB2312 symbol
+ * areas, aligned with the WebFontExpander post-processor (MISSCUT-3159).
+ */
+const int EXPAND_FONT_RANGES[][2] = {
+    {0x20, 0x7F}, {0xA0, 0xFF}, {0x370, 0x3FF}, {0x400, 0x4FF}, {0x2000, 0x206F},
+    {0x2160, 0x218F}, {0x2200, 0x22FF}, {0x2460, 0x24FF}, {0x2500, 0x25FF},
+    {0x3000, 0x303F}, {0x3040, 0x30FF}, {0x4E00, 0x9FFF}, {0xF900, 0xFAFF}, {0xFF00, 0xFFEF},
+};
+
+const int UNICODE_FULL_SIZE = 0x110000;
+
+} // namespace
+
+std::vector<std::string> HTMLRenderer::get_fallback_font_dirs() const
+{
+    std::vector<std::string> dirs;
+    std::string cur;
+    for(char c : param.fallback_font_dir)
+    {
+        if(c == ':')
+        {
+            if(!cur.empty()) { dirs.push_back(cur); cur.clear(); }
+        }
+        else
+            cur.push_back(c);
+    }
+    if(!cur.empty())
+        dirs.push_back(cur);
+    return dirs;
+}
+
+bool HTMLRenderer::locate_font_for(GfxFont * font, LocatedFontFile & out)
+{
+    string fontname(font->getName().value_or(""));
+
+    // resolve bad encodings in GB
+    auto iter = GB_ENCODED_FONT_NAME_MAP.find(fontname);
+    if(iter != GB_ENCODED_FONT_NAME_MAP.end())
+        fontname = iter->second;
+
+    if(fontname.empty())
+        return false;
+
+    return locate_full_font(fontname, font->isBold(), font->isItalic(),
+            get_fallback_font_dirs(), param.default_fallback_font, out);
+}
+
+/*
+ * Embed a full system font (instead of a used-glyph subset).
+ *
+ * The glyph set of the generated font covers all characters actually used
+ * in the PDF plus, when --expand-font-coverage is on, a broad charset
+ * (GBK etc.) so that text inserted later (e.g. by an online editor) still
+ * renders in the correct font.
+ *
+ * Glyphs are placed at their unicode slots (ffw_reencode_unicode_full);
+ * advance widths of used characters are overridden with the widths from
+ * the PDF, so the layout is identical to the original document.
+ *
+ * Returns false (without touching fontforge) when the file is not usable,
+ * so that callers can fall back to the original pipeline.
+ */
+bool HTMLRenderer::embed_full_font(const string & filepath, int face_index, GfxFont * font, FontInfo & info)
+{
+    if(param.debug)
+    {
+        cerr << "Embed full font: " << filepath;
+        if(face_index >= 0)
+            cerr << " face " << face_index;
+        cerr << " " << info.id << endl;
+    }
+
+    Gfx8BitFont * font_8bit = nullptr;
+    GfxCIDFont * font_cid = nullptr;
+    if(!font->isCIDFont())
+        font_8bit = dynamic_cast<Gfx8BitFont*>(font);
+    else
+        font_cid = dynamic_cast<GfxCIDFont*>(font);
+
+    const char * used_map = preprocessor.get_code_map(hash_ref(font->getID()));
+    int maxcode = font_8bit ? 0xff : 0xffff;
+
+    auto ctu = font->getToUnicode();
+    bool use_tounicode = (param.tounicode >= 0) && (ctu != nullptr);
+
+    // widths in em fractions; scaled into integer font units once em_size is known
+    std::vector<double> width_frac(UNICODE_FULL_SIZE, -1.0);
+    std::vector<char> keep(UNICODE_FULL_SIZE, 0);
+
+    bool has_space = false;
+    bool pua_used = false;
+
+    /*
+     * Collect used unicodes + widths from the PDF side (no fontforge yet,
+     * so that we can still bail out to the original pipeline).
+     *
+     * Full-font mode cannot recover glyphs for codes that only map to the
+     * private use area (e.g. CID fonts without ToUnicode): the real glyph
+     * identity is then known only inside the (possibly subsetted) original
+     * font file. Bail out in that case.
+     */
+    {
+        unordered_set<int> codeset;
+        bool retried = false; // avoid infinite loop, mirrors embed_font
+
+        for(int cur_code = 0; cur_code <= maxcode; ++cur_code)
+        {
+            if(!used_map[cur_code])
+                continue;
+
+            Unicode uu;
+            if(use_tounicode)
+            {
+                Unicode u;
+                Unicode const *pu = &u;
+                int n = ((CharCodeToUnicode *)ctu)->mapToUnicode(cur_code, &pu);
+                uu = check_unicode(pu, n, cur_code, font);
+            }
+            else
+            {
+                uu = unicode_from_font(cur_code, font);
+            }
+
+            if(uu <= 0 || uu >= (Unicode)UNICODE_FULL_SIZE)
+                continue;
+
+            if((uu >= 0xE000 && uu <= 0xF8FF) || uu >= 0xF0000)
+            {
+                pua_used = true;
+                break;
+            }
+
+            if(!codeset.insert((int)uu).second)
+            {
+                // ToUnicode collision: drop it once, as embed_font does
+                if(use_tounicode && param.tounicode == 0 && !retried)
+                {
+                    cerr << "ToUnicode CMap is not valid and got dropped for font: " << hex << info.id << dec << endl;
+                    retried = true;
+                    use_tounicode = false;
+                    codeset.clear();
+                    std::fill(width_frac.begin(), width_frac.end(), -1.0);
+                    std::fill(keep.begin(), keep.end(), (char)0);
+                    has_space = false;
+                    cur_code = -1;
+                    continue;
+                }
+            }
+
+            double cur_width = 0;
+            if(font_8bit)
+            {
+                cur_width = font_8bit->getWidth(cur_code);
+            }
+            else
+            {
+                char buf[2];
+                buf[0] = (cur_code >> 8) & 0xff;
+                buf[1] = (cur_code & 0xff);
+                cur_width = font_cid->getWidth(buf, 2);
+            }
+            cur_width /= info.font_size_scale;
+
+            if(uu == ' ')
+            {
+                if(equal(cur_width, 0))
+                    cur_width = 0.001;
+                info.space_width = cur_width;
+                has_space = true;
+            }
+
+            width_frac[uu] = cur_width;
+            keep[uu] = 1;
+        }
+    }
+
+    // note: ctu is a borrowed pointer (embed_font inc/decRefCnt's around its
+    // own usage); do NOT decRefCnt here, the font object still needs it
+    // during text rendering
+
+    if(pua_used)
+    {
+        cerr << "Warning: font " << hex << info.id << dec
+             << " uses private-use-area codepoints, cannot embed a full font; using the original pipeline" << endl;
+        return false;
+    }
+
+    info.use_tounicode = use_tounicode;
+
+    /*
+     * Dedupe: multiple PDF font objects often reference the same typeface
+     * (e.g. LibreOffice emits one font object per usage); embedding the same
+     * full font once per object would bloat the output by several MB each.
+     * Reuse the first embed when all used widths agree.
+     */
+    const string font_key = filepath + "#" + std::to_string(face_index);
+    {
+        auto it = full_font_ids.find(font_key);
+        if(it != full_font_ids.end())
+        {
+            auto & stored = full_font_widths[it->second];
+            bool compatible = true;
+            for(int u = 0; u < UNICODE_FULL_SIZE && compatible; ++u)
+            {
+                if(!keep[u] || width_frac[u] < 0)
+                    continue;
+                auto wit = stored.find(u);
+                // glyph absent from the shared font: width is irrelevant
+                if(wit == stored.end())
+                    continue;
+                if(std::abs(wit->second - width_frac[u]) > 1e-3)
+                    compatible = false;
+            }
+            if(compatible)
+            {
+                if(param.debug)
+                    cerr << "embed_full_font: reusing font " << hex << it->second << dec
+                         << " for " << font_key << endl;
+                export_alias_font(info, it->second);
+                return true;
+            }        }
+    }
+
+    // pre-validate the font file before involving fontforge (which exits on errors)
+    {
+        string suffix = get_suffix(filepath);
+        for(auto & c : suffix)
+            c = tolower(c);
+        if(suffix == "ttf" || suffix == "ttc")
+        {
+            if(!FoFiTrueType::load((char*)filepath.c_str(), face_index < 0 ? 0 : face_index))
+            {
+                cerr << "Warning: cannot pre-validate font file: " << filepath << endl;
+                return false;
+            }
+        }
+    }
+
+    ffw_load_font_face(filepath.c_str(), face_index);
+    if(param.debug) cerr << "embed_full_font: loaded" << endl;
+    ffw_prepare_font();
+
+    info.em_size = ffw_get_em_size();
+    if(param.debug) cerr << "embed_full_font: em_size=" << info.em_size << endl;
+
+    // scale em-fraction widths into integer font units
+    std::vector<int> width_list(UNICODE_FULL_SIZE, -1);
+    for(size_t u = 0; u < width_frac.size(); ++u)
+    {
+        if(width_frac[u] >= 0)
+            width_list[u] = (int)floor(width_frac[u] * info.em_size + 0.5);
+    }
+
+    /*
+     * ' ' may be inserted into HTML by pdf2htmlEX to improve copy&paste,
+     * make sure it is in the font with the width expected by the layout
+     */
+    if(!has_space)
+    {
+        double swidth = 0;
+        if(font_8bit)
+        {
+            swidth = font_8bit->getWidth(' ');
+        }
+        else
+        {
+            char buf[2] = {0, ' '};
+            swidth = font_cid->getWidth(buf, 2);
+        }
+        swidth /= info.font_size_scale;
+        if(equal(swidth, 0))
+            swidth = 0.001;
+        info.space_width = swidth;
+        width_list[' '] = (int)floor(swidth * info.em_size + 0.5);
+    }
+    keep[' '] = 1;
+
+    if(param.expand_font_coverage)
+    {
+        for(const auto & r : EXPAND_FONT_RANGES)
+            for(int u = r[0]; u <= r[1]; ++u)
+                keep[u] = 1;
+    }
+
+    ffw_reencode_unicode_full();
+    if(param.debug) cerr << "embed_full_font: reencoded" << endl;
+
+    /*
+     * Snapshot native widths (for dedupe bookkeeping): the effective width
+     * table of the generated font is the native width everywhere except for
+     * characters used in this document, whose widths come from the PDF.
+     */
+    std::vector<int> native_widths(UNICODE_FULL_SIZE, -1);
+    ffw_get_widths(native_widths.data(), UNICODE_FULL_SIZE);
+
+    ffw_set_widths(width_list.data(), UNICODE_FULL_SIZE,
+            param.stretch_narrow_glyph, param.squeeze_wide_glyph);
+    if(param.debug) cerr << "embed_full_font: widths set" << endl;
+
+    // drop everything else to keep the output small
+    ffw_prune_glyphs(keep.data(), UNICODE_FULL_SIZE);
+    if(param.debug) cerr << "embed_full_font: pruned" << endl;
+
+    /*
+     * Generate the font directly from the in-memory state.
+     * (embed_font's save/reload dance is only needed to let fontforge
+     * recompute data for fonts it re-encoded; here the font is already in
+     * its final encoding, and ffw_fix_metric works on the live font.)
+     */
+    ffw_fix_metric();
+    ffw_get_metric(&info.ascent, &info.descent);
+    if(param.override_fstype)
+        ffw_override_fstype();
+
+    string fn = (char*)str_fmt("%s/f%llx.%s",
+        (param.embed_font ? param.tmp_dir : param.dest_dir).c_str(),
+        info.id, param.font_format.c_str());
+
+    if(param.embed_font)
+        tmp_files.add(fn);
+
+    ffw_save(fn.c_str());
+
+    ffw_close();
+
+    // record for dedupe: effective em-fraction width of every kept glyph
+    {
+        full_font_ids[font_key] = info.id;
+        auto & stored = full_font_widths[info.id];
+        for(int u = 0; u < UNICODE_FULL_SIZE; ++u)
+        {
+            if(!keep[u])
+                continue;
+            if(width_frac[u] >= 0)
+                stored[u] = width_frac[u];       // PDF width override
+            else if(native_widths[u] > 0)
+                stored[u] = (double)native_widths[u] / info.em_size;
+        }
+    }
+
+    // the caller does not export; aliased fonts are exported above
+    export_remote_font(info, param.font_format, font);
+    return true;
+}
+
 
 const FontInfo * HTMLRenderer::install_font(GfxFont * font)
 {
@@ -924,13 +1274,15 @@ const FontInfo * HTMLRenderer::install_font(GfxFont * font)
                 break;
             default:
                 cerr << "TODO: other font loc" << endl;
-                export_remote_default_font(new_fn_id);
+                if(!install_fallback_font(font, new_font_info))
+                    export_remote_default_font(new_fn_id);
                 break;
         }
     }
     else
     {
-        export_remote_default_font(new_fn_id);
+        if(!install_fallback_font(font, new_font_info))
+            export_remote_default_font(new_fn_id);
     }
       
     return &new_font_info;
@@ -938,6 +1290,19 @@ const FontInfo * HTMLRenderer::install_font(GfxFont * font)
 
 void HTMLRenderer::install_embedded_font(GfxFont * font, FontInfo & info)
 {
+    /*
+     * When full coverage is requested, prefer a full system font of the
+     * same name over the (usually subsetted) embedded font: glyphs are
+     * identical for the same typeface, widths are overridden from the PDF
+     * anyway, and the result covers the full charset for later editing.
+     */
+    if(param.expand_font_coverage)
+    {
+        LocatedFontFile located;
+        if(locate_font_for(font, located) && embed_full_font(located.path, located.face_index, font, info))
+            return; // embed_full_font exports the font itself
+    }
+
     auto path = dump_embedded_font(font, info);
 
     if(path != "")
@@ -951,12 +1316,32 @@ void HTMLRenderer::install_embedded_font(GfxFont * font, FontInfo & info)
     }
 }
 
+/*
+ * Last resort before giving up on a font: locate a real font file by name
+ * and embed it, so that the output never degenerates to a bare font-family
+ * name or (worse) an invisible sans-serif placeholder.
+ */
+bool HTMLRenderer::install_fallback_font(GfxFont * font, FontInfo & info)
+{
+    LocatedFontFile located;
+    if(!locate_font_for(font, located))
+        return false;
+
+    if(!embed_full_font(located.path, located.face_index, font, info))
+        return false;
+
+    cerr << "Warning: font resolved via fallback locator: "
+         << font->getName().value_or("") << " -> " << located.path << endl;
+
+    return true;
+}
+
 void HTMLRenderer::install_external_font(GfxFont * font, FontInfo & info)
 {
     string fontname(font->getName().value_or(""));
 
     // resolve bad encodings in GB
-    auto iter = GB_ENCODED_FONT_NAME_MAP.find(fontname); 
+    auto iter = GB_ENCODED_FONT_NAME_MAP.find(fontname);
     if(iter != GB_ENCODED_FONT_NAME_MAP.end())
     {
         fontname = iter->second;
@@ -969,6 +1354,28 @@ void HTMLRenderer::install_external_font(GfxFont * font, FontInfo & info)
     {
         if(localfontloc.has_value())
         {
+            /*
+             * fontconfig substitution may silently return an unrelated font;
+             * when full coverage is requested, make sure the matched file is
+             * consistent with the requested name, otherwise relocate
+             */
+            if(param.expand_font_coverage)
+            {
+                LocatedFontFile located;
+                located.path = localfontloc.value().path;
+                located.face_index = localfontloc.value().fontNum;
+
+                if(!font_file_consistent(located, fontname)
+                        && !locate_font_for(font, located))
+                {
+                    located.path.clear();
+                }
+
+                if(!located.path.empty()
+                        && embed_full_font(located.path, located.face_index, font, info))
+                    return; // embed_full_font exports the font itself
+                // fall through to the original pipeline
+            }
             embed_font(string(localfontloc.value().path), font, info);
             export_remote_font(info, param.font_format, font);
             return;
@@ -976,6 +1383,9 @@ void HTMLRenderer::install_external_font(GfxFont * font, FontInfo & info)
         else
         {
             cerr << "Cannot embed external font: f" << hex << info.id << dec << ' ' << fontname << endl;
+            // last resort: locate a real font file ourselves
+            if(install_fallback_font(font, info))
+                return;
             // fallback to exporting by name
         }
     }
@@ -1062,8 +1472,24 @@ void HTMLRenderer::export_remote_font(const FontInfo & info, const string & form
              << "font-style:normal;"
              << "font-weight:normal;"
              << "visibility:visible;"
-             << css_turn_off_ligatures 
-             << "}" 
+             << css_turn_off_ligatures
+             << "}"
+             << endl;
+}
+
+/*
+ * Point this font id's class at another (already embedded) font,
+ * used when several PDF font objects resolve to the same system font file.
+ */
+void HTMLRenderer::export_alias_font(const FontInfo & info, long long target_id)
+{
+    f_css.fs << "." << CSS::FONT_FAMILY_CN << info.id << "{"
+             << "font-family:" << CSS::FONT_FAMILY_CN << target_id << ";"
+             << "line-height:" << round(info.ascent - info.descent) << ";"
+             << "font-style:normal;"
+             << "font-weight:normal;"
+             << "visibility:visible;"
+             << "}"
              << endl;
 }
 

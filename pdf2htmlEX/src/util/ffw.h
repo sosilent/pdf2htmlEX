@@ -34,10 +34,17 @@ const FFWVersionInfo* ffw_get_version_info(void);
 // load & save
 void ffw_new_font();
 void ffw_load_font(const char * filename);
+// load a specific face of a (possibly TTC) font file; face_index < 0 = default face
+void ffw_load_font_face(const char * filename, int face_index);
 void ffw_prepare_font(void);
 
 void ffw_save(const char * filename);
 void ffw_close(void);
+
+// remove all glyphs except .notdef and those at encoding slots with keep_slots[i] != 0
+// (after ffw_reencode_unicode_full, slot index == unicode value)
+// keep_size is the size of the keep_slots array
+void ffw_prune_glyphs(const char * keep_slots, int keep_size);
 
 ////////////////////////
 // encoding
@@ -62,8 +69,10 @@ void ffw_get_metric(double * ascent, double * descent);
 // set corresponding fields
 void ffw_set_metric(double ascent, double descent);
 
-void ffw_set_widths(int * width_list, int mapping_len, 
+void ffw_set_widths(int * width_list, int mapping_len,
         int stretch_narrow, int squeeze_wide);
+// read current advance widths per encoding slot into width_list (-1: no glyph)
+void ffw_get_widths(int * width_list, int mapping_len);
 
 ////////////////////////
 // others

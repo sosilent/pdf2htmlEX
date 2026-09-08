@@ -169,6 +169,8 @@ set(PDF2HTMLEX_SRC ${PDF2HTMLEX_SRC}
     src/util/encoding.cc
     src/util/ffw.h
     src/util/ffw.c
+    src/util/font_locator.h
+    src/util/font_locator.cc
     src/util/math.h
     src/util/math.cc
     src/util/misc.h

@@ -177,6 +177,9 @@ void parse_options (int argc, char **argv)
         .add("squeeze-wide-glyph", &param.squeeze_wide_glyph, 1, "shrink wide glyphs instead of truncating them")
         .add("override-fstype", &param.override_fstype, 0, "clear the fstype bits in TTF/OTF fonts")
         .add("process-type3", &param.process_type3, 0, "convert Type 3 fonts for web (experimental)")
+        .add("expand-font-coverage", &param.expand_font_coverage, 0, "embed full system fonts covering a broad charset (GBK etc.) instead of used-glyph subsets, so text inserted later still renders in the right font")
+        .add("fallback-font-dir", &param.fallback_font_dir, "", "colon-separated extra directories to scan for font files when fontconfig matching fails")
+        .add("default-fallback-font", &param.default_fallback_font, "", "last-resort font file used when a PDF font cannot be resolved at all")
 
         // text
         .add("heps", &param.h_eps, 1.0, "horizontal threshold for merging text, in pixels")

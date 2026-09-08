@@ -1,0 +1,15 @@
+# 编译层: 只编 pdf2htmlEX 本体(快, 供迭代)
+FROM pdf2htmlex-deps
+
+# 全量源码(含字体补丁)覆盖掉只有 buildScripts 的骨架
+COPY . pdf2htmlEX
+
+RUN cd pdf2htmlEX \
+    && export UNATTENDED="--assume-yes" \
+    && export MAKE_PARALLEL="-j $(nproc)" \
+    && ./buildScripts/buildPdf2htmlEX \
+    && ./buildScripts/installPdf2htmlEX
+
+WORKDIR /pdf
+
+ENTRYPOINT ["pdf2htmlEX"]

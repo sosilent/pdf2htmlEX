@@ -1,0 +1,61 @@
+# 依赖层: poppler + fontforge 从源码构建(重, 缓存复用)
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    git \
+    cmake \
+    pkg-config \
+    ca-certificates \
+    wget \
+    curl \
+    sudo \
+    gettext \
+    libfontconfig1-dev \
+    libfreetype6-dev \
+    libcairo2-dev \
+    libpango1.0-dev \
+    libpng-dev \
+    libjpeg-dev \
+    libtiff-dev \
+    libgif-dev \
+    libopenjp2-7-dev \
+    libspiro-dev \
+    libuninameslist-dev \
+    libxml2-dev \
+    libpoppler-dev \
+    libpoppler-private-dev \
+    poppler-data \
+    autoconf \
+    automake \
+    libtool \
+    libtool-bin \
+    libltdl-dev \
+    python3-dev \
+    libpython3-dev \
+    libpcre2-dev \
+    libreadline-dev \
+    libczmq-dev \
+    uthash-dev \
+    xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# 只需要 buildScripts 和版本定义; 源码在编译层 COPY
+COPY buildScripts pdf2htmlEX/buildScripts
+
+RUN git config --global http.version HTTP/1.1 \
+    && cd pdf2htmlEX \
+    && chmod +x buildScripts/* \
+    && chmod a+x /usr/bin/msgfmt \
+    && export UNATTENDED="--assume-yes" \
+    && export MAKE_PARALLEL="-j $(nproc)" \
+    && export PDF2HTMLEX_BRANCH="local" \
+    && export PDF2HTMLEX_PREFIX=/usr/local \
+    && export DEBIAN_FRONTEND=noninteractive \
+    && ./buildScripts/versionEnvs \
+    && ./buildScripts/getPoppler \
+    && ./buildScripts/buildPoppler \
+    && ./buildScripts/getFontforge \
+    && ./buildScripts/buildFontforge

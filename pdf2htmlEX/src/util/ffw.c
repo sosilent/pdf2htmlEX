@@ -67,6 +67,32 @@ static void dumb_logwarning(const char * format, ...) { }
 
 static void dumb_post_error(const char * title, const char * error, ...) { }
 
+/*
+ * fontforge's stock NOUI handlers crash on NULL messages (e.g. from
+ * ValidatePostScriptFontName when loading fonts with irregular name tables);
+ * these print the message but tolerate NULL
+ */
+static void safe_logwarning(const char * format, ...)
+{
+    if(format == NULL) return;
+    va_list al;
+    va_start(al, format);
+    vfprintf(stderr, format, al);
+    va_end(al);
+    fputc('\n', stderr);
+}
+
+static void safe_post_error(const char * title, const char * error, ...)
+{
+    if(error == NULL) return;
+    va_list al;
+    va_start(al, error);
+    fprintf(stderr, "FontForge error: %s: ", title ? title : "");
+    vfprintf(stderr, error, al);
+    va_end(al);
+    fputc('\n', stderr);
+}
+
 void ffw_init(const char* progPath, int debug)
 {
     ffwSetAction("initialize");
@@ -83,6 +109,12 @@ void ffw_init(const char* progPath, int debug)
         //disable error output of Fontforge
         ui_interface->logwarning = &dumb_logwarning;
         ui_interface->post_error = &dumb_post_error;
+    }
+    else
+    {
+        // keep the messages, but never crash on NULL
+        ui_interface->logwarning = &safe_logwarning;
+        ui_interface->post_error = &safe_post_error;
     }
 
     original_enc = FindOrMakeEncoding("original");
@@ -170,6 +202,55 @@ void ffw_load_font(const char * filename)
         cur_fv->cidmaster->ascent = cur_fv->sf->ascent;
         cur_fv->cidmaster->descent = cur_fv->sf->descent;
     }
+    ffwClearAction();
+}
+
+void ffw_load_font_face(const char * filename, int face_index)
+{
+    if(face_index < 0)
+    {
+        ffw_load_font(filename);
+        return;
+    }
+    // fontforge's LoadSplineFont accepts "filename(face)" selectors,
+    // where face may be a subfont name or a numeric index (PickTTFFont)
+    char * buf = (char*)malloc(strlen(filename) + 32);
+    sprintf(buf, "%s(%d)", filename, face_index);
+    ffw_load_font(buf);
+    free(buf);
+}
+
+void ffw_prune_glyphs(const char * keep_slots, int keep_size)
+{
+    ffwSetAction("prune glyphs");
+    EncMap * map = cur_fv->map;
+    SplineFont * sf = cur_fv->sf;
+
+    int n = map->enccount;
+    free(cur_fv->selected);
+    cur_fv->selected = (char*)calloc(n, sizeof(char));
+
+    int removed_any = 0;
+    int i;
+    for(i = 0; i < n; ++i)
+    {
+        int gid = map->map[i];
+        if(gid < 0 || gid >= sf->glyphcnt)
+            continue;
+        SplineChar * sc = sf->glyphs[gid];
+        if(sc == NULL)
+            continue;
+        // never drop .notdef
+        if(sc->orig_pos == 0)
+            continue;
+        if(i < keep_size && keep_slots[i])
+            continue;
+        cur_fv->selected[i] = 1;
+        removed_any = 1;
+    }
+
+    if(removed_any)
+        FVDetachAndRemoveGlyphs(cur_fv);
     ffwClearAction();
 }
 
@@ -507,6 +588,24 @@ void ffw_set_widths(int * width_list, int mapping_len,
         }
 
         SCSynchronizeWidth(sc, width_list[i], sc->width, cur_fv);
+    }
+    ffwClearAction();
+}
+
+void ffw_get_widths(int * width_list, int mapping_len)
+{
+    ffwSetAction("get the widths of");
+    SplineFont * sf = cur_fv->sf;
+    EncMap * map = cur_fv->map;
+    int i;
+    int imax = min(mapping_len, map->enccount);
+    for(i = 0; i < imax; ++i)
+    {
+        int j = map->map[i];
+        if(j < 0 || j >= sf->glyphcnt || sf->glyphs[j] == NULL)
+            width_list[i] = -1;
+        else
+            width_list[i] = sf->glyphs[j]->width;
     }
     ffwClearAction();
 }

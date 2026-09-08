@@ -11,6 +11,8 @@
 #include <cstdint>
 #include <fstream>
 #include <memory>
+#include <vector>
+#include <string>
 
 #include <OutputDev.h>
 #include <GfxState.h>
@@ -69,6 +71,7 @@
 
 #include "util/const.h"
 #include "util/misc.h"
+#include "util/font_locator.h"
 
 
 namespace pdf2htmlEX {
@@ -228,10 +231,18 @@ protected:
     std::string dump_embedded_font(GfxFont * font, FontInfo & info);
     std::string dump_type3_font(GfxFont * font, FontInfo & info);
     void embed_font(const std::string & filepath, GfxFont * font, FontInfo & info, bool get_metric_only = false);
+    // embed a full system font (optionally covering a broad charset), used-glyph widths come from the PDF
+    bool embed_full_font(const std::string & filepath, int face_index, GfxFont * font, FontInfo & info);
     const FontInfo * install_font(GfxFont * font);
     void install_embedded_font(GfxFont * font, FontInfo & info);
     void install_external_font (GfxFont * font, FontInfo & info);
+    // last resort: locate a real font file by name and embed it
+    bool install_fallback_font(GfxFont * font, FontInfo & info);
+    // resolve a real font file for the PDF font (name cleanup + aliases + fontconfig + fallback dirs)
+    bool locate_font_for(GfxFont * font, LocatedFontFile & out);
+    std::vector<std::string> get_fallback_font_dirs() const;
     void export_remote_font(const FontInfo & info, const std::string & suffix, GfxFont * font);
+    void export_alias_font(const FontInfo & info, long long target_id);
     void export_remote_default_font(long long fn_id);
     void export_local_font(const FontInfo & info, GfxFont * font, const std::string & original_font_name, const std::string & cssfont);
 
@@ -332,6 +343,10 @@ protected:
     ////////////////////////////////////////////////////
     // managers store values actually used in HTML (i.e. scaled)
     std::unordered_map<long long, FontInfo> font_info_map;
+
+    // dedupe of full system fonts: "path#face" -> font id, font id -> used unicode widths
+    std::unordered_map<std::string, long long> full_font_ids;
+    std::unordered_map<long long, std::unordered_map<int, double>> full_font_widths;
     AllStateManager all_manager;
     HTMLTextState cur_text_state;
     HTMLLineState cur_line_state;
