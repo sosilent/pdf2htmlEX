@@ -9,6 +9,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <vector>
 #include <algorithm>
@@ -26,26 +27,28 @@ bool should_split_image(GfxState * state, int img_width, int img_height,
                         GfxImageColorMap * colorMap, double dpi, double min_edge_pt)
 {
     const double * ctm = state->getCTM();
+    const bool dbg = getenv("SPLIT_IMAGE_DEBUG") != nullptr;
+#define SPLIT_DBG_FAIL(reason) do { if(dbg) fprintf(stderr, "[split-image] skip: %s (ctm=[%g,%g,%g,%g,%g,%g] img=%dx%d)\n", reason, ctm[0],ctm[1],ctm[2],ctm[3],ctm[4],ctm[5], img_width, img_height); return false; } while(0)
 
     // 轴对齐(无旋转/斜切)
     if (std::fabs(ctm[1]) > 1e-4 || std::fabs(ctm[2]) > 1e-4)
-        return false;
+        SPLIT_DBG_FAIL("rotated");
 
     double w_dev = std::fabs(ctm[0]);
     double h_dev = std::fabs(ctm[3]);
     if (w_dev < 1e-6 || h_dev < 1e-6)
-        return false;
+        SPLIT_DBG_FAIL("degenerate");
 
     // 显示尺寸阈值(换算成 pt, 与渲染 DPI 无关, 保证文字趟/背景趟判定一致)
     if (w_dev * 72.0 / dpi < min_edge_pt || h_dev * 72.0 / dpi < min_edge_pt)
-        return false;
+        SPLIT_DBG_FAIL("too small");
 
     // 颜色可导出
     if (colorMap->getBits() != 8)
-        return false;
+        SPLIT_DBG_FAIL("bits!=8");
     int comps = colorMap->getNumPixelComps();
     if (comps != 1 && comps != 3 && comps != 4)
-        return false;
+        SPLIT_DBG_FAIL("comps");
 
     // 未被裁剪: 图片设备包围盒 ⊂ 当前裁剪包围盒(1px 容差)
     double xs[4] = {ctm[4], ctm[0] + ctm[4], ctm[2] + ctm[4], ctm[0] + ctm[2] + ctm[4]};
@@ -58,9 +61,10 @@ bool should_split_image(GfxState * state, int img_width, int img_height,
     const double clip_eps = 1.0;
     if (x_min < cx0 - clip_eps || y_min < cy0 - clip_eps
             || x_max > cx1 + clip_eps || y_max > cy1 + clip_eps)
-        return false;
+        SPLIT_DBG_FAIL("clipped");
 
     return true;
+#undef SPLIT_DBG_FAIL
 }
 
 namespace {

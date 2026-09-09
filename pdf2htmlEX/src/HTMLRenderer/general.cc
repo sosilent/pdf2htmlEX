@@ -204,6 +204,8 @@ void HTMLRenderer::startPage(int pageNum, GfxState *state, XRef * xref)
 
     html_text_page.set_page_size(state->getPageWidth(), state->getPageHeight());
 
+    split_image_elements.clear();
+
     reset_state();
 }
 
@@ -253,6 +255,14 @@ void HTMLRenderer::endPage() {
                 fallback_bg_renderer->embed_image(pageNum);
         }
     }
+
+    // --split-images: 拆分出的插图先落盘(压在背景图上、垫在文本下)
+    if(getenv("SPLIT_IMAGE_DEBUG") && !split_image_elements.empty())
+        cerr << "[split-image] flush " << split_image_elements.size() << " elements at page " << pageNum
+             << " tellp=" << f_curpage->tellp() << endl;
+    for (const auto & e : split_image_elements)
+        (*f_curpage) << e;
+    split_image_elements.clear();
 
     // dump all text
     html_text_page.dump_text(*f_curpage);

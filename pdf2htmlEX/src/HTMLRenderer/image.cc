@@ -30,7 +30,9 @@ void HTMLRenderer::drawImage(GfxState * state, Object * ref, Stream * str,
                  bool interpolate, const int *maskColors, bool inlineImg)
 {
     tracer.draw_image(state);
-
+    if(getenv("SPLIT_IMAGE_DEBUG"))
+        cerr << "[split-image] drawImage page=" << pageNum << " img=" << width << "x" << height
+             << " mask=" << (maskColors != nullptr) << " inline=" << inlineImg << endl;
     // --split-images: 大面积/轴对齐/未裁剪的图片拆为独立 <img>, 便于前端移动编辑;
     // 色键掩码(maskColors)与内联图片不参与拆分
     if(param.split_images && !inlineImg && maskColors == nullptr
@@ -55,7 +57,6 @@ void HTMLRenderer::drawSoftMaskedImage(GfxState *state, Object *ref, Stream *str
                    bool maskInterpolate)
 {
     tracer.draw_image(state);
-
     if(param.split_images
             && should_split_image(state, width, height, colorMap,
                                   text_zoom_factor() * DEFAULT_DPI, param.split_image_min_size)
@@ -79,7 +80,6 @@ void HTMLRenderer::drawMaskedImage(GfxState *state, Object *ref, Stream *str,
                    bool maskInvert, bool maskInterpolate)
 {
     tracer.draw_image(state);
-
     // 显式掩码图片不拆分(拆分会丢掩码), 直接走 OutputDev 默认(文字趟不绘制),
     // 背景趟由 Splash/CairoOutputDev 带掩码正常绘制
     OutputDev::drawImage(state, ref, str, width, height, colorMap, interpolate, nullptr, false);
@@ -97,6 +97,12 @@ bool HTMLRenderer::split_image_to_html(GfxState * state, Object * ref, Stream * 
     const double * ctm = state->getCTM();
     bool flip_h = ctm[0] < 0;
     bool flip_v = ctm[3] < 0;
+
+    if(getenv("SPLIT_IMAGE_DEBUG") && f_curpage)
+        cerr << "[split-image] tellp=" << f_curpage->tellp() << " "
+             << "ctm=[" << ctm[0] << "," << ctm[1] << "," << ctm[2] << ","
+             << ctm[3] << "," << ctm[4] << "," << ctm[5] << "] page=" << pageNum
+             << " imgsize=" << width << "x" << height << endl;
 
     // 设备空间包围盒: 图像空间单位方格四角经 CTM 映射
     double xs[4] = {ctm[4], ctm[0] + ctm[4], ctm[2] + ctm[4], ctm[0] + ctm[2] + ctm[4]};
@@ -155,13 +161,16 @@ bool HTMLRenderer::split_image_to_html(GfxState * state, Object * ref, Stream * 
             split_image_src_map[key] = src;
     }
 
-    auto & out = *f_curpage;
-    out << "<img class=\"" << CSS::SPLIT_IMAGE_CN
-        << " " << CSS::LEFT_CN   << all_manager.left.install(x_min)
-        << " " << CSS::BOTTOM_CN << all_manager.bottom.install(y_min)
-        << " " << CSS::WIDTH_CN  << all_manager.width.install(x_max - x_min)
-        << " " << CSS::HEIGHT_CN << all_manager.height.install(y_max - y_min)
+    // 文本是缓冲到 HTMLTextPage 在 endPage 才落盘的, 这里同样先入缓冲,
+    // 由 endPage 在背景图之后、文本之前输出(版式: 压在背景上、垫在文本下)。
+    // 位置用内联 style 而非 StateManager 类(id 与文本共享管理器, 曾出现 id/值错位),
+    // 图片数量少, 不值得为它走类去重。
+    std::ostringstream oss;
+    oss << "<img class=\"" << CSS::SPLIT_IMAGE_CN
+        << "\" style=\"left:" << x_min << "px;bottom:" << y_min
+        << "px;width:" << (x_max - x_min) << "px;height:" << (y_max - y_min) << "px;"
         << "\" alt=\"\" src=\"" << src << "\"/>";
+    split_image_elements.push_back(oss.str());
 
     return true;
 }

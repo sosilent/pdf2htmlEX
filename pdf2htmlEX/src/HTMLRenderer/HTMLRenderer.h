@@ -415,6 +415,8 @@ protected:
     // --split-images: 拆分图片序号与按 PDF 对象去重(key 为 xref num/gen)
     long long split_image_count = 0;
     std::map<std::pair<int, int>, std::string> split_image_src_map;
+    // 当前页拆分出的 <img> 元素缓冲(endPage 时在背景图之后、文本之前输出)
+    std::vector<std::string> split_image_elements;
 };
 
 } //namespace pdf2htmlEX
