@@ -62,6 +62,10 @@ struct Param
     std::string fallback_font_dir;
     std::string default_fallback_font;
 
+    // image
+    int split_images;
+    double split_image_min_size;
+
     // text
     double h_eps, v_eps;
     double space_threshold;

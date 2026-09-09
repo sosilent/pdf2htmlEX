@@ -44,6 +44,15 @@ public:
       double originX, double originY,
       CharCode code, int nBytes, const Unicode *u, int uLen);
 
+  // --split-images: 已拆分为独立 <img> 的图片不再画进背景(防重影)
+  virtual void drawImage(GfxState *state, Object *ref, Stream *str,
+      int width, int height, GfxImageColorMap *colorMap,
+      bool interpolate, const int *maskColors, bool inlineImg);
+  virtual void drawSoftMaskedImage(GfxState *state, Object *ref, Stream *str,
+      int width, int height, GfxImageColorMap *colorMap, bool interpolate,
+      Stream *maskStr, int maskWidth, int maskHeight,
+      GfxImageColorMap *maskColorMap, bool maskInterpolate);
+
   //for proof
   void beginTextObject(GfxState *state);
   void beginString(GfxState *state, const GooString * str);

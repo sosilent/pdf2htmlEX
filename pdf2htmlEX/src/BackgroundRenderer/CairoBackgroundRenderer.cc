@@ -15,6 +15,7 @@
 #if ENABLE_SVG
 
 #include "CairoBackgroundRenderer.h"
+#include "util/image_split.h"
 #include "SplashBackgroundRenderer.h"
 
 namespace pdf2htmlEX {
@@ -41,6 +42,30 @@ CairoBackgroundRenderer::~CairoBackgroundRenderer()
             html_renderer->tmp_files.add(this->build_bitmap_path(p.first));
         }
     }
+}
+
+void CairoBackgroundRenderer::drawImage(GfxState *state, Object *ref, Stream *str,
+    int width, int height, GfxImageColorMap *colorMap,
+    bool interpolate, const int *maskColors, bool inlineImg)
+{
+    if (param.split_images && !inlineImg && maskColors == nullptr
+            && should_split_image(state, width, height, colorMap,
+                                  param.actual_dpi, param.split_image_min_size))
+        return;
+    CairoOutputDev::drawImage(state, ref, str, width, height, colorMap, interpolate, maskColors, inlineImg);
+}
+
+void CairoBackgroundRenderer::drawSoftMaskedImage(GfxState *state, Object *ref, Stream *str,
+    int width, int height, GfxImageColorMap *colorMap, bool interpolate,
+    Stream *maskStr, int maskWidth, int maskHeight,
+    GfxImageColorMap *maskColorMap, bool maskInterpolate)
+{
+    if (param.split_images
+            && should_split_image(state, width, height, colorMap,
+                                  param.actual_dpi, param.split_image_min_size))
+        return;
+    CairoOutputDev::drawSoftMaskedImage(state, ref, str, width, height, colorMap, interpolate,
+            maskStr, maskWidth, maskHeight, maskColorMap, maskInterpolate);
 }
 
 void CairoBackgroundRenderer::drawChar(GfxState *state, double x, double y,

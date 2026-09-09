@@ -13,6 +13,7 @@
 #include <memory>
 #include <vector>
 #include <string>
+#include <map>
 
 #include <OutputDev.h>
 #include <GfxState.h>
@@ -171,6 +172,22 @@ struct HTMLRenderer : OutputDev
                        int maskWidth, int maskHeight,
                        GfxImageColorMap *maskColorMap,
                        bool maskInterpolate);
+
+    // 显式掩码图片不拆分(掩码会丢), 留在背景里; 覆盖掉 OutputDev 默认实现
+    // (默认实现丢掩码后直接转调 drawImage, 否则会误入拆分路径)
+    virtual void drawMaskedImage(GfxState *state, Object *ref, Stream *str,
+                       int width, int height,
+                       GfxImageColorMap *colorMap,
+                       bool interpolate,
+                       Stream *maskStr,
+                       int maskWidth, int maskHeight,
+                       bool maskInvert, bool maskInterpolate);
+
+    // --split-images: 导出图片并输出独立定位的 <img> 元素, 成功返回 true
+    bool split_image_to_html(GfxState * state, Object * ref, Stream * str,
+                       int width, int height, GfxImageColorMap * colorMap,
+                       Stream * maskStr, int maskWidth, int maskHeight,
+                       GfxImageColorMap * maskColorMap);
 
     virtual void stroke(GfxState *state); 
     virtual void fill(GfxState *state);
@@ -394,6 +411,10 @@ protected:
 
     CoveredTextDetector covered_text_detector;
     DrawingTracer tracer;
+
+    // --split-images: 拆分图片序号与按 PDF 对象去重(key 为 xref num/gen)
+    long long split_image_count = 0;
+    std::map<std::pair<int, int>, std::string> split_image_src_map;
 };
 
 } //namespace pdf2htmlEX

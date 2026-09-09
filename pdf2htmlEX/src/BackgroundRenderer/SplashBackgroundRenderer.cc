@@ -11,11 +11,37 @@
 
 #include "Base64Stream.h"
 #include "SplashBackgroundRenderer.h"
+#include "util/image_split.h"
 
 namespace pdf2htmlEX {
 
 using std::string;
 using std::ifstream;
+
+void SplashBackgroundRenderer::drawImage(GfxState *state, Object *ref, Stream *str,
+    int width, int height, GfxImageColorMap *colorMap,
+    bool interpolate, const int *maskColors, bool inlineImg)
+{
+    if (param.split_images && !inlineImg && maskColors == nullptr
+            && should_split_image(state, width, height, colorMap,
+                                  param.actual_dpi, param.split_image_min_size))
+        return;
+    SplashOutputDev::drawImage(state, ref, str, width, height, colorMap, interpolate, maskColors, inlineImg);
+}
+
+void SplashBackgroundRenderer::drawSoftMaskedImage(GfxState *state, Object *ref, Stream *str,
+    int width, int height, GfxImageColorMap *colorMap, bool interpolate,
+    Stream *maskStr, int maskWidth, int maskHeight,
+    GfxImageColorMap *maskColorMap, bool maskInterpolate)
+{
+    if (param.split_images
+            && should_split_image(state, width, height, colorMap,
+                                  param.actual_dpi, param.split_image_min_size))
+        return;
+    SplashOutputDev::drawSoftMaskedImage(state, ref, str, width, height, colorMap, interpolate,
+            maskStr, maskWidth, maskHeight, maskColorMap, maskInterpolate);
+}
+
 
 const SplashColor SplashBackgroundRenderer::white = {255,255,255};
 

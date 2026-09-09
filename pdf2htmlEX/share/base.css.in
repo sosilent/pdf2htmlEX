@@ -123,6 +123,11 @@
   -webkit-user-select:none;
   user-select:none;
 }
+.@CSS_SPLIT_IMAGE_CN@ { /* images split out as separate movable elements (--split-images) */
+  position:absolute;
+  border:0;
+  margin:0;
+}
 @media print {
   .@CSS_PAGE_FRAME_CN@ {
     margin:0;

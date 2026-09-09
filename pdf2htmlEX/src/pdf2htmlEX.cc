@@ -181,6 +181,10 @@ void parse_options (int argc, char **argv)
         .add("fallback-font-dir", &param.fallback_font_dir, "", "colon-separated extra directories to scan for font files when fontconfig matching fails")
         .add("default-fallback-font", &param.default_fallback_font, "", "last-resort font file used when a PDF font cannot be resolved at all")
 
+        // image
+        .add("split-images", &param.split_images, 0, "emit large axis-aligned unclipped images as separate movable <img> elements instead of merging them into the page background")
+        .add("split-image-min-size", &param.split_image_min_size, 24.0, "min displayed edge length in pt for an image to be split out (smaller ones stay in the page background)")
+
         // text
         .add("heps", &param.h_eps, 1.0, "horizontal threshold for merging text, in pixels")
         .add("veps", &param.v_eps, 1.0, "vertical threshold for merging text, in pixels")
